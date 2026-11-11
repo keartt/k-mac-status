@@ -1,7 +1,37 @@
 import AppKit
 import Darwin
+import IOKit.pwr_mgt
+
+final class SleepPrevention {
+    private var assertion: IOPMAssertionID = 0
+    var isActive: Bool { assertion != 0 }
+
+    func start() throws {
+        guard !isActive else { return }
+        let result = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            "k-mac-status: keep Mac awake with display off" as CFString,
+            &assertion
+        )
+        guard result == kIOReturnSuccess else {
+            assertion = 0
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(result))
+        }
+    }
+
+    func stop() {
+        if isActive {
+            IOPMAssertionRelease(assertion)
+            assertion = 0
+        }
+    }
+
+    deinit { stop() }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private let prevention = SleepPrevention()
     private var item: NSStatusItem!
     private let popover = NSPopover()
     private var panel: PanelController?
@@ -82,6 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = CommandLine.arguments.contains("--lifecycle-test") ? .applicationDefined : .transient
         popover.delegate = self; popover.animates = false
         let controller = PanelController(); controller.loadViewIfNeeded()
+        controller.napButton.target = self; controller.napButton.action = #selector(startNap)
+        controller.napButton.contentTintColor = prevention.isActive ? .labelColor : .secondaryLabelColor
+        controller.napButton.toolTip = prevention.isActive ? "자동 잠자기 방지 중 · 화면 다시 끄기" : "화면 끄기 · 자동 잠자기 방지 시작"
         panel = controller; collector = Collector(); popover.contentViewController = controller
         popover.contentSize = controller.view.frame.size
         NSApp.activate(ignoringOtherApps: true)
@@ -114,6 +147,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = nil; panel = nil; collector = nil
         DispatchQueue.main.async { malloc_zone_pressure_relief(nil, 0) }
     }
+    @objc private func startNap() {
+        do {
+            try prevention.start()
+            popover.close()
+            let command = Process()
+            command.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            command.arguments = ["displaysleepnow"]
+            command.standardOutput = FileHandle.nullDevice
+            command.standardError = FileHandle.nullDevice
+            try command.run()
+            command.waitUntilExit()
+            guard command.terminationStatus == 0 else {
+                throw NSError(domain: "KScreenNap", code: Int(command.terminationStatus),
+                              userInfo: [NSLocalizedDescriptionKey: "화면을 끄지 못했습니다."])
+            }
+        } catch {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = prevention.isActive ? "화면 끄기 실패 — 절전 방지는 유지됩니다" : "절전 방지를 시작할 수 없습니다"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        prevention.stop()
+    }
     @objc private func sleep() {
         sleeping = true; memoryTimer?.invalidate(); memoryTimer = nil
         popover.close()
@@ -124,6 +184,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 setbuf(stdout, nil)
 let app = NSApplication.shared
 if CommandLine.arguments.contains("--self-test") {
+    let prevention = SleepPrevention()
+    precondition(!prevention.isActive)
+    try prevention.start()
+    try prevention.start()
+    precondition(prevention.isActive)
+    var assertions: Unmanaged<CFDictionary>?
+    precondition(IOPMCopyAssertionsByProcess(&assertions) == kIOReturnSuccess)
+    let byProcess = assertions!.takeRetainedValue() as NSDictionary
+    let ownAssertions = byProcess[NSNumber(value: ProcessInfo.processInfo.processIdentifier)] as! [NSDictionary]
+    precondition(ownAssertions.contains {
+        ($0[kIOPMAssertionTypeKey] as? String) == kIOPMAssertionTypePreventUserIdleSystemSleep
+            && ($0[kIOPMAssertionLevelKey] as? Int) == kIOPMAssertionLevelOn
+    })
+    prevention.stop()
+    prevention.stop()
+    precondition(!prevention.isActive)
     let memory = read_memory()
     precondition(memory.valid != 0 && memory.used > 0 && memory.used <= memory.total)
     precondition(own_footprint() > 0)
@@ -143,10 +219,11 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(percent(0.625) == "63%" && percent(1.1) == "100%")
     let panel = PanelController(); panel.loadViewIfNeeded()
     panel.view.appearance = NSAppearance(named: CommandLine.arguments.contains("--light") ? .aqua : .darkAqua)
+    precondition(panel.napButton.image != nil && panel.napButton.frame.minX == 18)
     panel.show(first); panel.show(second)
     precondition(panel.memory.ring.value != nil && panel.cpu.ring.value != nil)
     precondition(panel.memory.graph.values.count == 2)
-    precondition(panel.view.subviews.compactMap { $0 as? NSButton }.count == 1)
+    precondition(panel.view.subviews.compactMap { $0 as? NSButton }.count == 2)
     if let position = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > position + 1 {
         let view = panel.view
         let image = view.bitmapImageRepForCachingDisplay(in: view.bounds)!

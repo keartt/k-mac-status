@@ -76,7 +76,8 @@ final class MetricRow: NSView {
     required init?(coder: NSCoder) { fatalError() }
     override func draw(_ dirtyRect: NSRect) {
         let card = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
-        NSColor.controlBackgroundColor.withAlphaComponent(0.65).setFill(); card.fill()
+        NSColor.controlBackgroundColor.setFill(); card.fill()
+        NSColor.labelColor.withAlphaComponent(0.07).setFill(); card.fill()
         NSColor.separatorColor.withAlphaComponent(0.35).setStroke(); card.lineWidth = 0.5; card.stroke()
     }
     func update(_ text: String, value: Double?, history: Bool = false) {
@@ -97,6 +98,7 @@ final class PanelController: NSViewController {
     let disk = MetricRow(title: "디스크")
     let network = MetricRow(title: "네트워크")
     let memory = MetricRow(title: "메모리", percentage: true)
+    let napButton = NSButton(image: NSImage(systemSymbolName: "moon.fill", accessibilityDescription: "화면 끄기 및 자동 잠자기 방지")!, target: nil, action: nil)
     let appsStack = NSStackView()
     let scroll = NSScrollView()
     private var icons: [URL: NSImage] = [:]
@@ -114,6 +116,9 @@ final class PanelController: NSViewController {
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         appsStack.orientation = .vertical; appsStack.alignment = .leading; appsStack.spacing = 2
         scroll.documentView = appsStack; view.addSubview(scroll)
+        napButton.isBordered = false
+        napButton.frame = NSRect(x: 18, y: 650, width: 24, height: 24)
+        view.addSubview(napButton)
         let quit = NSButton(image: NSImage(systemSymbolName: "power", accessibilityDescription: "종료")!, target: NSApp, action: #selector(NSApplication.terminate(_:)))
         quit.isBordered = false; quit.contentTintColor = .secondaryLabelColor; quit.toolTip = "종료"
         quit.frame = NSRect(x: 378, y: 650, width: 24, height: 24); view.addSubview(quit)
